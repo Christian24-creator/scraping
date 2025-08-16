@@ -107,10 +107,11 @@ class SufarmedScraper:
                 'submit': ['submitLogin', 'submit', 'login', 'submit_login', '1']
             }
             
+            # Asegúrate de que los campos de email y password estén en form_data con los nombres correctos
             form_data.update({
                 'email': email,
                 'password': password,
-                'submitLogin': '1'
+                'submitLogin': '1' # Por si acaso, un nombre común para el botón de submit
             })
             
             for field_type, names in possible_field_names.items():
@@ -120,8 +121,9 @@ class SufarmedScraper:
                     elif field_type == 'password':
                         form_data[name] = password
                     elif field_type == 'submit':
-                        form_data[name] = '1'
-            
+                        if name in response.text: # Solo si el nombre del submit button está en la página
+                            form_data[name] = '1' 
+
             post_headers = {
                 'Referer': login_url,
                 'Origin': 'https://sufarmed.com',
@@ -180,29 +182,70 @@ class SufarmedScraper:
         except Exception as e:
             return False, f"Error inesperado durante el login: {str(e)}"
     
-    def extract_prices_from_html(self, html_content):
-        """Extrae precios del HTML usando regex"""
-        price_patterns = [
-            r'<[^>]*class=["\'][^"\']*product-price[^"\']*["\'][^>]*content=["\']([^"\']+)["\']',
-            r'content=["\']([0-9]+\.?[0-9]*)["\'][^>]*class=["\'][^"\']*product-price',
-            r'<[^>]*class=["\'][^"\']*price[^"\']*["\'][^>]*>\s*\$?([0-9]+\.?[0-9]*)',
-            r'\$([0-9]+\.?[0-9]*)',
-            r'precio["\s]*:["\s]*([0-9]+\.?[0-9]*)',
-            r'"price"["\s]*:["\s]*([0-9]+\.?[0-9]*)'
-        ]
+    def extract_product_details(self, html_content):
+        """
+        Extrae nombres de productos y sus precios asociados del HTML.
+        Busca contenedores de productos y luego extrae el nombre y el precio de cada uno.
+        """
+        products_data = []
+
+        # Patrón para encontrar el div contenedor de la descripción del producto
+        # que típicamente contiene el título del producto y el precio.
+        # Captura todo el contenido dentro de este div.
+        product_container_pattern = r'<div[^>]*class=["\'][^"\']*col-description[^"\']*["\'][^>]*>(.*?)<\/div>'
         
-        prices = []
-        for pattern in price_patterns:
-            matches = re.findall(pattern, html_content, re.IGNORECASE)
-            for match in matches:
-                price = str(match).replace('$', '').replace(',', '').strip()
-                if price and price.replace('.', '').isdigit():
-                    prices.append(price)
+        container_matches = re.findall(product_container_pattern, html_content, re.IGNORECASE | re.DOTALL)
         
-        return prices
-    
+        for container_html in container_matches:
+            name = None
+            price = "No disponible" # Valor por defecto si el precio no se encuentra
+
+            # Patrón para el nombre del producto dentro del <h2>.product-title que contiene un <a>
+            # Group 1: El texto del nombre del producto
+            name_pattern = r'<h2[^>]*class=["\'][^"\']*product-title[^"\']*["\'][^>]*>\s*<a[^>]*>(.*?)<\/a>'
+            name_match = re.search(name_pattern, container_html, re.IGNORECASE | re.DOTALL)
+            if name_match:
+                name = name_match.group(1).strip()
+            
+            # Patrón para el precio que sigue inmediatamente al </a> dentro del <h2> (ej. "== $0")
+            # Group 1: El valor numérico del precio
+            price_after_name_pattern = r'<a[^>]*>.*?<\/a>\s*(?:==\s*\$?([0-9]+\.?[0-9]*))'
+            price_match_after_name = re.search(price_after_name_pattern, container_html, re.IGNORECASE | re.DOTALL)
+            
+            if price_match_after_name and price_match_after_name.group(1):
+                price = price_match_after_name.group(1).strip()
+            else:
+                # Si el precio no está inmediatamente después del nombre, buscarlo con otros patrones comunes
+                # dentro del mismo contenedor de producto.
+                common_price_patterns = [
+                    # Busca precio en etiquetas con class="product-price" o "price"
+                    r'<[^>]*class=["\'][^"\']*(?:product-price|price)[^"\']*["\'][^>]*content=["\']([^"\']+)["\']',
+                    r'content=["\']([0-9]+\.?[0-9]*)["\'][^>]*class=["\'][^"\']*(?:product-price|price)',
+                    r'<[^>]*class=["\'][^"\']*(?:product-price|price)[^"\']*["\'][^>]*>\s*\$?([0-9]+\.?[0-9]*)',
+                    # Busca un valor numérico precedido por "$"
+                    r'\$([0-9]+\.?[0-9]*)',
+                    # Busca precio en JSON-like estructuras (ej. "price": "12.34")
+                    r'["\']price["\"]\s*:\s*["\']?([0-9]+\.?[0-9]*)["\']?',
+                    r'["\']precio["\"]\s*:\s*["\']?([0-9]+\.?[0-9]*)["\']?'
+                ]
+                
+                for p_pattern in common_price_patterns:
+                    price_match_other = re.search(p_pattern, container_html, re.IGNORECASE)
+                    if price_match_other:
+                        # Limpiar el precio (quitar $, comas)
+                        found_price = str(price_match_other.group(1)).replace('$', '').replace(',', '').strip()
+                        # Verificar si el precio es un número válido
+                        if found_price and found_price.replace('.', '', 1).isdigit(): 
+                            price = found_price
+                            break # Ya encontramos un precio, no necesitamos buscar más
+            
+            if name: # Solo añade el producto a la lista si se encontró un nombre
+                products_data.append({'name': name, 'price': price})
+        
+        return products_data
+
     def buscar_producto(self, producto):
-        """Busca un producto y obtiene todos los precios"""
+        """Busca un producto y obtiene todos los nombres y precios."""
         try:
             search_urls = [
                 f"https://sufarmed.com/sufarmed/buscar?s={producto}",
@@ -215,17 +258,17 @@ class SufarmedScraper:
                     response = self.session.get(search_url, timeout=15)
                     
                     if response.status_code == 200:
-                        prices = self.extract_prices_from_html(response.text)
+                        products_data = self.extract_product_details(response.text)
                         
-                        if prices:
-                            return prices, "Precios encontrados"
+                        if products_data:
+                            return products_data, "Productos y precios encontrados"
                         
                         if "producto" in response.text.lower() or "product" in response.text.lower():
-                            return [], "Productos encontrados pero sin precios visibles"
+                            return [], "Productos encontrados pero sin precios visibles o no extraíbles"
                     
                 except requests.exceptions.Timeout:
                     continue
-                except Exception:
+                except Exception: # Captura excepciones generales para probar otras URLs
                     continue
             
             return [], "No se encontraron productos o no se pudo acceder a la búsqueda"
@@ -234,15 +277,15 @@ class SufarmedScraper:
             return [], f"Error durante la búsqueda: {str(e)}"
     
     def buscar_sin_login(self, producto):
-        """Busca producto sin login como fallback"""
+        """Busca producto sin login como fallback y obtiene nombres y precios."""
         try:
             search_url = f"https://sufarmed.com/buscar?s={producto}"
             response = self.session.get(search_url, timeout=10)
             
             if response.status_code == 200:
-                prices = self.extract_prices_from_html(response.text)
-                if prices:
-                    return prices, "Precios encontrados (sin login)"
+                products_data = self.extract_product_details(response.text)
+                if products_data:
+                    return products_data, "Productos y precios encontrados (sin login)"
             
             return [], "No se encontraron resultados sin login"
             
@@ -294,7 +337,7 @@ if st.button("🔍 Buscar Precio", type="primary"):
                 EMAIL = email_input
                 PASSWORD = password_input
                 
-                precios = []  # Cambiado a lista para almacenar los precios
+                products_found = []  # Ahora almacenará una lista de diccionarios {name, price}
                 search_message = ""
                 
                 st.info("🔐 Intentando iniciar sesión en Sufarmed...")
@@ -304,24 +347,22 @@ if st.button("🔍 Buscar Precio", type="primary"):
                     st.success(f"✅ {login_message}")
                     
                     st.info(f"🔍 Buscando: {producto_buscar}")
-                    precios, search_message = scraper.buscar_producto(producto_buscar)
+                    products_found, search_message = scraper.buscar_producto(producto_buscar)
                     
                 else:
                     st.warning(f"⚠️ Login falló: {login_message}")
                     st.info("🔄 Intentando búsqueda sin login...")
-                    precios, search_message = scraper.buscar_sin_login(producto_buscar)
+                    products_found, search_message = scraper.buscar_sin_login(producto_buscar)
                 
-                if precios:
+                if products_found:
                     st.markdown("---")
                     st.markdown("### 💰 Resultados de la Búsqueda")
                     
-                    st.metric(label="Producto", value=producto_buscar)
-                    
-                    for i, p in enumerate(precios):
-                        st.metric(
-                            label=f"Precio {i+1}",
-                            value=f"${p}"
-                        )
+                    st.subheader(f"Productos encontrados para: {producto_buscar}")
+                    for i, product_item in enumerate(products_found):
+                        st.markdown(f"**{product_item['name']}**")
+                        st.write(f"**Precio:** ${product_item['price']}")
+                        st.markdown("---") # Separador para cada producto
                     
                     st.success("🎉 ¡Búsqueda completada exitosamente!")
                 else:
@@ -343,7 +384,7 @@ st.info("""
 - Esta aplicación busca precios de productos en Sufarmed.com
 - Utiliza requests y regex para extraer información (100% compatible con Streamlit Cloud)
 - Intenta hacer login automáticamente, pero también funciona sin login
-- Los resultados mostrados corresponden a todos los precios encontrados para la búsqueda
+- Los resultados mostrados corresponden a todos los precios y nombres encontrados para la búsqueda
 """)
 
 # Debug/Test section
@@ -396,4 +437,3 @@ st.markdown(
     "<div style='text-align: center; color: gray;'>Desarrollado con Streamlit 🚀 | Sin dependencias externas</div>", 
     unsafe_allow_html=True
 )
-
