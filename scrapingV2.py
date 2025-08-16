@@ -107,21 +107,23 @@ class SufarmedScraper:
                 'submit': ['submitLogin', 'submit', 'login', 'submit_login', '1']
             }
             
-            # Asegúrate de que los campos de email y password estén en form_data con los nombres correctos
-            form_data.update({
-                'email': email,
-                'password': password,
-                'submitLogin': '1' # Por si acaso, un nombre común para el botón de submit
-            })
+            # Explicitly set email and password. This will take precedence.
+            form_data['email'] = email
+            form_data['password'] = password
             
+            # Add common submit button value if not already captured by hidden fields
+            if 'submitLogin' not in form_data and 'submit' not in form_data:
+                 form_data['submitLogin'] = '1'
+            
+            # This loop is kept for robustness, it might find other field names
             for field_type, names in possible_field_names.items():
                 for name in names:
                     if field_type == 'email':
                         form_data[name] = email
                     elif field_type == 'password':
                         form_data[name] = password
-                    elif field_type == 'submit':
-                        if name in response.text: # Solo si el nombre del submit button está en la página
+                    elif field_type == 'submit' and name not in form_data: # Only add if not already present
+                        if name in response.text: # Check if the name exists on the page
                             form_data[name] = '1' 
 
             post_headers = {
@@ -189,61 +191,81 @@ class SufarmedScraper:
         """
         products_data = []
 
-        # Patrón para encontrar el div contenedor de la descripción del producto
-        # que típicamente contiene el título del producto y el precio.
-        # Captura todo el contenido dentro de este div.
-        product_container_pattern = r'<div[^>]*class=["\'][^"\']*col-description[^"\']*["\'][^>]*>(.*?)<\/div>'
-        
-        container_matches = re.findall(product_container_pattern, html_content, re.IGNORECASE | re.DOTALL)
-        
-        for container_html in container_matches:
-            name = None
-            price = "No disponible" # Valor por defecto si el precio no se encuentra
+        # Patrón para encontrar un bloque completo de producto (ej. <article class="product-miniature">)
+        # Esto es crucial para asociar correctamente el nombre y el precio de un mismo producto.
+        # Captura el ID del producto (si está en 'data-id-product') y todo el HTML del bloque.
+        product_miniature_pattern = r'<article[^>]*class=["\'][^"\']*(?:product-miniature|js-product-miniature)[^"\']*["\'][^>]*data-id-product=["\'](\d+)["\'][^>]*>(.*?)<\/article>'
+        product_miniature_matches = re.findall(product_miniature_pattern, html_content, re.IGNORECASE | re.DOTALL)
 
-            # Patrón para el nombre del producto dentro del <h2>.product-title que contiene un <a>
-            # Group 1: El texto del nombre del producto
+        if not product_miniature_matches:
+            # Fallback si no se encuentran 'product-miniature' (ej. buscar un div genérico de columna)
+            # Esto es menos preciso, pero puede ser útil si el sitio no usa 'article product-miniature'
+            # Se asume que divs con clases 'col-X' pueden ser contenedores de producto.
+            generic_product_block_pattern = r'<div[^>]*class=["\'][^"\']*\b(?:col-\d+|product-item)\b[^"\']*["\'][^>]*>(.*?)<\/div>'
+            generic_matches = re.findall(generic_product_block_pattern, html_content, re.IGNORECASE | re.DOTALL)
+            # Para simplificar, si no hay ID, usamos un valor por defecto o un índice.
+            product_miniature_matches = [(f"generic_{i}", html) for i, html in enumerate(generic_matches)]
+
+
+        for product_id, miniature_html in product_miniature_matches:
+            name = "Nombre no encontrado"
+            price = "Precio no disponible"
+
+            # Buscar el nombre del producto dentro del HTML del bloque
             name_pattern = r'<h2[^>]*class=["\'][^"\']*product-title[^"\']*["\'][^>]*>\s*<a[^>]*>(.*?)<\/a>'
-            name_match = re.search(name_pattern, container_html, re.IGNORECASE | re.DOTALL)
+            name_match = re.search(name_pattern, miniature_html, re.IGNORECASE | re.DOTALL)
             if name_match:
                 name = name_match.group(1).strip()
-            
-            # Patrón para el precio que sigue inmediatamente al </a> dentro del <h2> (ej. "== $0")
-            # Group 1: El valor numérico del precio
-            price_after_name_pattern = r'<a[^>]*>.*?<\/a>\s*(?:==\s*\$?([0-9]+\.?[0-9]*))'
-            price_match_after_name = re.search(price_after_name_pattern, container_html, re.IGNORECASE | re.DOTALL)
-            
-            if price_match_after_name and price_match_after_name.group(1):
-                price = price_match_after_name.group(1).strip()
-            else:
-                # Si el precio no está inmediatamente después del nombre, buscarlo con otros patrones comunes
-                # dentro del mismo contenedor de producto.
-                common_price_patterns = [
-                    # Busca precio en etiquetas con class="product-price" o "price"
-                    r'<[^>]*class=["\'][^"\']*(?:product-price|price)[^"\']*["\'][^>]*content=["\']([^"\']+)["\']',
-                    r'content=["\']([0-9]+\.?[0-9]*)["\'][^>]*class=["\'][^"\']*(?:product-price|price)',
-                    r'<[^>]*class=["\'][^"\']*(?:product-price|price)[^"\']*["\'][^>]*>\s*\$?([0-9]+\.?[0-9]*)',
-                    # Busca un valor numérico precedido por "$"
-                    r'\$([0-9]+\.?[0-9]*)',
-                    # Busca precio en JSON-like estructuras (ej. "price": "12.34")
-                    r'["\']price["\"]\s*:\s*["\']?([0-9]+\.?[0-9]*)["\']?',
-                    r'["\']precio["\"]\s*:\s*["\']?([0-9]+\.?[0-9]*)["\']?'
-                ]
-                
-                for p_pattern in common_price_patterns:
-                    price_match_other = re.search(p_pattern, container_html, re.IGNORECASE)
-                    if price_match_other:
-                        # Limpiar el precio (quitar $, comas)
-                        found_price = str(price_match_other.group(1)).replace('$', '').replace(',', '').strip()
-                        # Verificar si el precio es un número válido
-                        if found_price and found_price.replace('.', '', 1).isdigit(): 
-                            price = found_price
-                            break # Ya encontramos un precio, no necesitamos buscar más
-            
-            if name: # Solo añade el producto a la lista si se encontró un nombre
-                products_data.append({'name': name, 'price': price})
-        
-        return products_data
+                # Limpiar el nombre de entidades HTML y saltos de línea
+                name = re.sub(r'\s*\n\s*', ' ', name)
+                name = re.sub(r'&\w+;', '', name)
 
+            # Buscar el precio dentro del HTML del bloque
+            # Prioridad 1: Atributo 'content' del span con clase "product-price"
+            price_content_pattern = r'<span[^>]*class=["\'][^"\']*product-price[^"\']*["\'][^>]*content=["\']([^"\']+)["\']'
+            price_match = re.search(price_content_pattern, miniature_html, re.IGNORECASE)
+            
+            if price_match:
+                price = price_match.group(1).strip()
+            else:
+                # Prioridad 2: Contenido de texto del span con clase "product-price"
+                # Limpiar '&nbsp;' para facilitar la extracción del número
+                cleaned_miniature_html = miniature_html.replace('&nbsp;', ' ')
+                
+                # Este patrón busca el valor numérico (con punto o coma como decimal)
+                # dentro de un span con la clase 'product-price'.
+                price_text_pattern = r'<span[^>]*class=["\'][^"\']*product-price[^"\']*["\'][^>]*>\s*\$?\s*([0-9]+\.?[0-9]*(?:,\d{2})?)\s*(?:[^<>]*)?<\/span>'
+                price_match = re.search(price_text_pattern, cleaned_miniature_html, re.IGNORECASE | re.DOTALL)
+                
+                if price_match:
+                    price_val = price_match.group(1).strip()
+                    price = price_val.replace(',', '.') # Reemplazar coma por punto para consistencia
+                    # Verificar si el precio es un número válido después de la limpieza
+                    if not price.replace('.', '', 1).isdigit():
+                         price = "Precio no disponible"
+                else:
+                    # Fallback a otros patrones genéricos si los específicos fallan
+                    generic_price_patterns = [
+                        # Busca en cualquier elemento con clases "product-price" o "price"
+                        r'<[^>]*class=["\'][^"\']*(?:product-price|price)[^"\']*["\'][^>]*>\s*\$?([0-9]+\.?[0-9]*)',
+                        r'\$([0-9]+\.?[0-9]*)', # Cualquier número precedido por $
+                        r'precio["\s]*:["\s]*([0-9]+\.?[0-9]*)', # Patrón JSON-like para "precio"
+                        r'"price"["\s]*:["\s]*([0-9]+\.?[0-9]*)' # Patrón JSON-like para "price"
+                    ]
+                    for gen_pattern in generic_price_patterns:
+                        gen_match = re.search(gen_pattern, cleaned_miniature_html, re.IGNORECASE)
+                        if gen_match:
+                            found_price = str(gen_match.group(1)).replace('$', '').replace(',', '').strip()
+                            if found_price and found_price.replace('.', '', 1).isdigit():
+                                price = found_price
+                                break
+            
+            # Solo añadir el producto a la lista si se encontró un nombre (el precio puede ser "No disponible")
+            if name != "Nombre no encontrado":
+                products_data.append({'name': name, 'price': price})
+
+        return products_data
+    
     def buscar_producto(self, producto):
         """Busca un producto y obtiene todos los nombres y precios."""
         try:
@@ -268,7 +290,8 @@ class SufarmedScraper:
                     
                 except requests.exceptions.Timeout:
                     continue
-                except Exception: # Captura excepciones generales para probar otras URLs
+                except Exception as e: # Captura excepciones generales para probar otras URLs
+                    # print(f"Error accediendo o parseando {search_url}: {e}") # Descomentar para depuración
                     continue
             
             return [], "No se encontraron productos o no se pudo acceder a la búsqueda"
