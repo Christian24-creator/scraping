@@ -58,52 +58,143 @@ class SufarmedScraper:
         return form_data
     
     def login(self, email, password):
-        """Intenta hacer login en Sufarmed"""
+        """Intenta hacer login en Sufarmed con debug mejorado"""
         try:
             # Obtener la página de login
             login_url = "https://sufarmed.com/sufarmed/iniciar-sesion"
-            response = self.session.get(login_url, timeout=10)
+            response = self.session.get(login_url, timeout=15)
             
             if response.status_code != 200:
                 return False, f"No se pudo acceder a la página de login (Status: {response.status_code})"
             
-            # Extraer datos del formulario
-            form_data = self.extract_form_data(response.text)
+            # Debug: verificar que llegamos a la página correcta
+            if "login" not in response.text.lower() and "email" not in response.text.lower():
+                return False, "La página no parece ser un formulario de login"
             
-            # Buscar token CSRF
-            csrf_token = self.extract_csrf_token(response.text)
+            # Extraer datos del formulario con patrones más amplios
+            form_data = {}
+            
+            # Patrones más amplios para campos hidden
+            hidden_patterns = [
+                r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']',
+                r'<input[^>]*name=["\']([^"\']+)["\'][^>]*type=["\']hidden["\'][^>]*value=["\']([^"\']*)["\']',
+                r'<input[^>]*value=["\']([^"\']*)["\'][^>]*name=["\']([^"\']+)["\'][^>]*type=["\']hidden["\']'
+            ]
+            
+            for pattern in hidden_patterns:
+                matches = re.findall(pattern, response.text, re.IGNORECASE | re.DOTALL)
+                for match in matches:
+                    if len(match) == 2:
+                        name, value = match
+                        form_data[name] = value
+            
+            # Buscar tokens CSRF con más patrones
+            csrf_patterns = [
+                r'name=["\']token["\'][^>]*value=["\']([^"\']+)["\']',
+                r'name=["\']_token["\'][^>]*value=["\']([^"\']+)["\']',
+                r'name=["\']csrf_token["\'][^>]*value=["\']([^"\']+)["\']',
+                r'name=["\']authenticity_token["\'][^>]*value=["\']([^"\']+)["\']',
+                r'"token"[:\s]*"([^"]+)"',
+                r'"_token"[:\s]*"([^"]+)"'
+            ]
+            
+            csrf_token = None
+            for pattern in csrf_patterns:
+                match = re.search(pattern, response.text, re.IGNORECASE)
+                if match:
+                    csrf_token = match.group(1)
+                    break
+            
             if csrf_token:
                 form_data['token'] = csrf_token
             
-            # Agregar credenciales
+            # Probar diferentes nombres de campos
+            possible_field_names = {
+                'email': ['email', 'username', 'user', 'login_email', 'customer_email'],
+                'password': ['password', 'passwd', 'pwd', 'login_password', 'customer_password'],
+                'submit': ['submitLogin', 'submit', 'login', 'submit_login', '1']
+            }
+            
+            # Agregar credenciales con diferentes nombres posibles
             form_data.update({
                 'email': email,
                 'password': password,
                 'submitLogin': '1'
             })
             
-            # Enviar datos de login
-            login_response = self.session.post(login_url, data=form_data, timeout=10)
+            # También probar nombres alternativos
+            for field_type, names in possible_field_names.items():
+                for name in names:
+                    if field_type == 'email':
+                        form_data[name] = email
+                    elif field_type == 'password':
+                        form_data[name] = password
+                    elif field_type == 'submit':
+                        form_data[name] = '1'
             
-            # Verificar si el login fue exitoso
-            if login_response.status_code == 200:
-                if "mi-cuenta" in login_response.url or "my-account" in login_response.url:
-                    return True, "Login exitoso"
-                elif "dashboard" in login_response.url or "account" in login_response.url:
-                    return True, "Login exitoso"
-                elif "error" in login_response.text.lower() or "incorrect" in login_response.text.lower():
-                    return False, "Credenciales incorrectas"
+            # Headers adicionales para el POST
+            post_headers = {
+                'Referer': login_url,
+                'Origin': 'https://sufarmed.com',
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
+            
+            # Enviar datos de login
+            login_response = self.session.post(
+                login_url, 
+                data=form_data, 
+                headers=post_headers,
+                timeout=15,
+                allow_redirects=True
+            )
+            
+            # Debug de la respuesta
+            final_url = login_response.url.lower()
+            response_text = login_response.text.lower()
+            
+            # Verificar si el login fue exitoso - criterios más amplios
+            success_indicators = [
+                "mi-cuenta" in final_url,
+                "my-account" in final_url,
+                "dashboard" in final_url,
+                "account" in final_url,
+                "profile" in final_url,
+                "bienvenido" in response_text,
+                "welcome" in response_text,
+                "logout" in response_text,
+                "cerrar sesion" in response_text,
+                "salir" in response_text
+            ]
+            
+            # Indicadores de error
+            error_indicators = [
+                "error" in response_text and ("login" in response_text or "email" in response_text),
+                "incorrect" in response_text,
+                "invalid" in response_text and ("email" in response_text or "password" in response_text),
+                "incorrecto" in response_text,
+                "invalido" in response_text,
+                "credenciales" in response_text and "incorrectas" in response_text
+            ]
+            
+            if any(success_indicators):
+                return True, "Login exitoso"
+            elif any(error_indicators):
+                return False, "Credenciales incorrectas o error en login"
+            elif login_response.status_code == 200:
+                # Si llegamos aquí, intentar determinar si estamos logueados
+                if "login" in response_text and "password" in response_text:
+                    return False, "Aún en página de login - posible error de credenciales"
                 else:
-                    return True, "Login posiblemente exitoso"
+                    return True, "Login posiblemente exitoso (verificación ambigua)"
             else:
-                return False, f"Error en login (Status: {login_response.status_code})"
+                return False, f"Error HTTP en login (Status: {login_response.status_code})"
                 
         except requests.exceptions.Timeout:
-            return False, "Timeout: El servidor tardó demasiado en responder"
+            return False, "Timeout: El servidor tardó demasiado en responder durante el login"
         except requests.exceptions.ConnectionError:
-            return False, "Error de conexión: No se pudo conectar al servidor"
+            return False, "Error de conexión durante el login"
         except Exception as e:
-            return False, f"Error durante el login: {str(e)}"
+            return False, f"Error inesperado durante el login: {str(e)}"
     
     def extract_prices_from_html(self, html_content):
         """Extrae precios del HTML usando regex"""
@@ -293,14 +384,51 @@ st.info("""
 """)
 
 # Debug/Test section
-with st.expander("🔧 Panel de Pruebas"):
-    if st.button("Probar Conexión"):
-        with st.spinner("Probando conexión..."):
-            try:
-                response = requests.get("https://sufarmed.com", timeout=5)
-                st.success(f"✅ Conexión exitosa - Status: {response.status_code}")
-            except Exception as e:
-                st.error(f"❌ Error de conexión: {str(e)}")
+with st.expander("🔧 Panel de Pruebas y Debug"):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Probar Conexión"):
+            with st.spinner("Probando conexión..."):
+                try:
+                    response = requests.get("https://sufarmed.com", timeout=5)
+                    st.success(f"✅ Conexión exitosa - Status: {response.status_code}")
+                except Exception as e:
+                    st.error(f"❌ Error de conexión: {str(e)}")
+    
+    with col2:
+        if st.button("Debug Login"):
+            if email_input and password_input:
+                with st.spinner("Analizando proceso de login..."):
+                    scraper = SufarmedScraper()
+                    try:
+                        # Obtener página de login para análisis
+                        response = scraper.session.get("https://sufarmed.com/sufarmed/iniciar-sesion", timeout=10)
+                        
+                        st.write("**Análisis de la página de login:**")
+                        st.write(f"- Status Code: {response.status_code}")
+                        st.write(f"- URL Final: {response.url}")
+                        
+                        # Buscar campos de formulario
+                        email_fields = re.findall(r'name=["\']([^"\']*email[^"\']*)["\']', response.text, re.IGNORECASE)
+                        password_fields = re.findall(r'name=["\']([^"\']*password[^"\']*)["\']', response.text, re.IGNORECASE)
+                        
+                        if email_fields:
+                            st.write(f"- Campos de email encontrados: {email_fields}")
+                        if password_fields:
+                            st.write(f"- Campos de password encontrados: {password_fields}")
+                        
+                        # Buscar tokens
+                        tokens = re.findall(r'name=["\']([^"\']*token[^"\']*)["\'][^>]*value=["\']([^"\']+)["\']', response.text, re.IGNORECASE)
+                        if tokens:
+                            st.write(f"- Tokens encontrados: {len(tokens)} tokens")
+                        
+                        st.success("✅ Análisis completado")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error en debug: {str(e)}")
+            else:
+                st.warning("Ingresa credenciales primero para hacer debug")
 
 # Footer
 st.markdown("---")
