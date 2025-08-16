@@ -1,19 +1,7 @@
 import streamlit as st
+import requests
+from bs4 import BeautifulSoup
 import time
-
-# Intentar importar selenium y manejar errores
-try:
-    from selenium import webdriver
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    from selenium.webdriver.chrome.options import Options
-    SELENIUM_AVAILABLE = True
-except ImportError as e:
-    SELENIUM_AVAILABLE = False
-    SELENIUM_ERROR = str(e)
 
 # Configurar la página de Streamlit
 st.set_page_config(
@@ -24,106 +12,117 @@ st.set_page_config(
 
 # Título principal
 st.title("🏥 Sufarmed - Buscador de Precios")
-
-# Verificar si Selenium está disponible
-if not SELENIUM_AVAILABLE:
-    st.error(f"""
-    ❌ **Error: Selenium no está disponible**
-    
-    **Error específico:** {SELENIUM_ERROR}
-    
-    **Solución:**
-    1. Instala las dependencias necesarias:
-    ```bash
-    pip install selenium webdriver-manager
-    ```
-    
-    2. O ejecuta:
-    ```bash
-    pip install -r requirements.txt
-    ```
-    
-    3. Si estás en Streamlit Cloud, asegúrate de que `requirements.txt` esté en tu repositorio.
-    """)
-    st.stop()
-
 st.markdown("---")
 
-def setup_driver():
-    """Configurar el WebDriver de Chrome para Streamlit"""
-    try:
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")  # Ejecutar en modo headless
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--remote-debugging-port=9222")
-        chrome_options.add_argument("--disable-web-security")
-        chrome_options.add_argument("--allow-running-insecure-content")
-        
-        # Para Streamlit Cloud, usar el ChromeDriver del sistema
+class SufarmedScraper:
+    def __init__(self):
+        self.session = requests.Session()
+        # Headers para simular un navegador real
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'es-ES,es;q=0.8,en-US;q=0.5,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive'
+        })
+    
+    def login(self, email, password):
+        """Intenta hacer login en Sufarmed"""
         try:
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-        except Exception:
-            # Fallback: intentar usar chromium-chromedriver del sistema
-            chrome_options.binary_location = "/usr/bin/chromium-browser"
-            driver = webdriver.Chrome(options=chrome_options)
-        
-        return driver
-    except Exception as e:
-        st.error(f"Error al configurar Chrome Driver: {str(e)}")
-        return None
-
-def login_sufarmed(driver, email, password):
-    """Realizar login en Sufarmed"""
-    try:
-        # Navegar a la página de login
-        driver.get("https://sufarmed.com/sufarmed/iniciar-sesion?back=https%3A%2F%2Fsufarmed.com%2Fsufarmed%2Finiciar-sesion%3Fback%3Dmy-account")
-        time.sleep(3)
-        
-        # Encontrar y llenar los campos de login
-        email_field = driver.find_element(By.NAME, "email")
-        password_field = driver.find_element(By.NAME, "password")
-        
-        email_field.send_keys(email)
-        password_field.send_keys(password)
-        
-        # Hacer clic en el botón de login
-        login_button = driver.find_element(By.ID, "submit-login")
-        login_button.click()
-        time.sleep(5)
-        
-        return True
-    except Exception as e:
-        st.error(f"Error durante el login: {str(e)}")
-        return False
-
-def buscar_producto(driver, producto):
-    """Buscar un producto en Sufarmed"""
-    try:
-        # Buscar la caja de búsqueda y escribir el producto
-        search_box = driver.find_element(By.CLASS_NAME, "form-search-control")
-        search_box.clear()
-        search_box.send_keys(producto)
-        search_box.submit()
-        time.sleep(3)
-        
-        # Obtener el precio del primer producto
-        precios = WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((By.CLASS_NAME, "product-price"))
-        )
-        
-        if precios:
-            primer_precio = precios[0].get_attribute("content")
-            return primer_precio
-        else:
-            return None
+            # Obtener la página de login
+            login_url = "https://sufarmed.com/sufarmed/iniciar-sesion"
+            response = self.session.get(login_url)
             
-    except Exception as e:
-        st.error(f"Error durante la búsqueda: {str(e)}")
-        return None
+            if response.status_code != 200:
+                return False, "No se pudo acceder a la página de login"
+            
+            # Parsear la página para obtener tokens CSRF si existen
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Buscar campos ocultos (tokens CSRF, etc.)
+            hidden_inputs = soup.find_all('input', {'type': 'hidden'})
+            form_data = {}
+            for input_field in hidden_inputs:
+                name = input_field.get('name')
+                value = input_field.get('value')
+                if name:
+                    form_data[name] = value or ''
+            
+            # Agregar credenciales
+            form_data.update({
+                'email': email,
+                'password': password,
+                'submitLogin': '1'
+            })
+            
+            # Enviar datos de login
+            login_response = self.session.post(login_url, data=form_data)
+            
+            # Verificar si el login fue exitoso
+            if "mi-cuenta" in login_response.url or "my-account" in login_response.url:
+                return True, "Login exitoso"
+            elif "error" in login_response.text.lower() or "incorrect" in login_response.text.lower():
+                return False, "Credenciales incorrectas"
+            else:
+                return True, "Login posiblemente exitoso"
+                
+        except Exception as e:
+            return False, f"Error durante el login: {str(e)}"
+    
+    def buscar_producto(self, producto):
+        """Busca un producto y obtiene su precio"""
+        try:
+            # URL de búsqueda
+            search_url = "https://sufarmed.com/sufarmed/buscar"
+            
+            # Parámetros de búsqueda
+            search_params = {
+                's': producto,
+                'controller': 'search'
+            }
+            
+            # Realizar búsqueda
+            response = self.session.get(search_url, params=search_params)
+            
+            if response.status_code != 200:
+                return None, "No se pudo realizar la búsqueda"
+            
+            # Parsear resultados
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Buscar precios con diferentes selectores posibles
+            price_selectors = [
+                '.product-price[content]',
+                '.price',
+                '.product-price',
+                '[data-price]',
+                '.price-current',
+                '.current-price'
+            ]
+            
+            precio = None
+            for selector in price_selectors:
+                price_elements = soup.select(selector)
+                if price_elements:
+                    price_element = price_elements[0]
+                    # Intentar obtener precio del atributo content
+                    precio = price_element.get('content')
+                    if not precio:
+                        # Si no existe content, obtener el texto
+                        precio = price_element.get_text().strip()
+                    if precio:
+                        # Limpiar el precio
+                        precio = precio.replace('$', '').replace(',', '').strip()
+                        if precio.replace('.', '').isdigit():
+                            break
+            
+            if precio:
+                return precio, "Precio encontrado"
+            else:
+                return None, "No se encontraron precios"
+                
+        except Exception as e:
+            return None, f"Error durante la búsqueda: {str(e)}"
 
 # Interfaz de usuario
 st.markdown("### 🔍 Buscar Producto")
@@ -138,24 +137,25 @@ producto_buscar = st.text_input(
 if st.button("🔍 Buscar Precio", type="primary"):
     if producto_buscar:
         # Mostrar spinner mientras se procesa
-        with st.spinner("Iniciando sesión y buscando producto..."):
-            driver = None
+        with st.spinner("Buscando producto..."):
             try:
-                # Configurar el driver
-                driver = setup_driver()
+                # Crear el scraper
+                scraper = SufarmedScraper()
                 
-                # Credenciales (considera usar st.secrets para mayor seguridad)
+                # Credenciales
                 EMAIL = "laubec83@gmail.com"
                 PASSWORD = "Sr3ChK8pBoSEScZ"
                 
                 # Realizar login
                 st.info("🔐 Iniciando sesión en Sufarmed...")
-                if login_sufarmed(driver, EMAIL, PASSWORD):
-                    st.success("✅ Sesión iniciada correctamente")
+                login_success, login_message = scraper.login(EMAIL, PASSWORD)
+                
+                if login_success:
+                    st.success(f"✅ {login_message}")
                     
                     # Buscar producto
                     st.info(f"🔍 Buscando: {producto_buscar}")
-                    precio = buscar_producto(driver, producto_buscar)
+                    precio, search_message = scraper.buscar_producto(producto_buscar)
                     
                     if precio:
                         # Mostrar el resultado
@@ -176,16 +176,12 @@ if st.button("🔍 Buscar Precio", type="primary"):
                         
                         st.success("🎉 ¡Búsqueda completada exitosamente!")
                     else:
-                        st.warning("⚠️ No se encontraron precios para este producto")
+                        st.warning(f"⚠️ {search_message}")
                 else:
-                    st.error("❌ Error al iniciar sesión")
+                    st.error(f"❌ {login_message}")
                     
             except Exception as e:
                 st.error(f"❌ Error general: {str(e)}")
-            finally:
-                # Cerrar el driver
-                if driver:
-                    driver.quit()
     else:
         st.warning("⚠️ Por favor ingresa un nombre de producto")
 
@@ -194,8 +190,9 @@ st.markdown("---")
 st.markdown("### ℹ️ Información")
 st.info("""
 - Esta aplicación busca precios de productos en Sufarmed.com
+- Utiliza web scraping con requests y BeautifulSoup (compatible con Streamlit Cloud)
 - Los resultados mostrados corresponden al primer producto encontrado
-- El proceso puede tomar unos segundos debido a la navegación web automatizada
+- El proceso puede tomar unos segundos
 """)
 
 # Footer
