@@ -29,7 +29,6 @@ class SufarmedScraper:
     
     def extract_csrf_token(self, html_content):
         """Extrae token CSRF del HTML usando regex"""
-        # Buscar tokens comunes
         patterns = [
             r'name="token"\s+value="([^"]+)"',
             r'name="_token"\s+value="([^"]+)"',
@@ -48,7 +47,6 @@ class SufarmedScraper:
         """Extrae datos de formulario usando regex"""
         form_data = {}
         
-        # Buscar inputs hidden
         hidden_pattern = r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\'][^>]*>'
         matches = re.findall(hidden_pattern, html_content, re.IGNORECASE)
         
@@ -60,21 +58,17 @@ class SufarmedScraper:
     def login(self, email, password):
         """Intenta hacer login en Sufarmed con debug mejorado"""
         try:
-            # Obtener la página de login
             login_url = "https://sufarmed.com/sufarmed/iniciar-sesion"
             response = self.session.get(login_url, timeout=15)
             
             if response.status_code != 200:
                 return False, f"No se pudo acceder a la página de login (Status: {response.status_code})"
             
-            # Debug: verificar que llegamos a la página correcta
             if "login" not in response.text.lower() and "email" not in response.text.lower():
                 return False, "La página no parece ser un formulario de login"
             
-            # Extraer datos del formulario con patrones más amplios
             form_data = {}
             
-            # Patrones más amplios para campos hidden
             hidden_patterns = [
                 r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']',
                 r'<input[^>]*name=["\']([^"\']+)["\'][^>]*type=["\']hidden["\'][^>]*value=["\']([^"\']*)["\']',
@@ -87,8 +81,7 @@ class SufarmedScraper:
                     if len(match) == 2:
                         name, value = match
                         form_data[name] = value
-            
-            # Buscar tokens CSRF con más patrones
+     
             csrf_patterns = [
                 r'name=["\']token["\'][^>]*value=["\']([^"\']+)["\']',
                 r'name=["\']_token["\'][^>]*value=["\']([^"\']+)["\']',
@@ -108,21 +101,18 @@ class SufarmedScraper:
             if csrf_token:
                 form_data['token'] = csrf_token
             
-            # Probar diferentes nombres de campos
             possible_field_names = {
                 'email': ['email', 'username', 'user', 'login_email', 'customer_email'],
                 'password': ['password', 'passwd', 'pwd', 'login_password', 'customer_password'],
                 'submit': ['submitLogin', 'submit', 'login', 'submit_login', '1']
             }
             
-            # Agregar credenciales con diferentes nombres posibles
             form_data.update({
                 'email': email,
                 'password': password,
                 'submitLogin': '1'
             })
             
-            # También probar nombres alternativos
             for field_type, names in possible_field_names.items():
                 for name in names:
                     if field_type == 'email':
@@ -132,14 +122,12 @@ class SufarmedScraper:
                     elif field_type == 'submit':
                         form_data[name] = '1'
             
-            # Headers adicionales para el POST
             post_headers = {
                 'Referer': login_url,
                 'Origin': 'https://sufarmed.com',
                 'Content-Type': 'application/x-www-form-urlencoded'
             }
             
-            # Enviar datos de login
             login_response = self.session.post(
                 login_url, 
                 data=form_data, 
@@ -148,11 +136,9 @@ class SufarmedScraper:
                 allow_redirects=True
             )
             
-            # Debug de la respuesta
             final_url = login_response.url.lower()
             response_text = login_response.text.lower()
             
-            # Verificar si el login fue exitoso - criterios más amplios
             success_indicators = [
                 "mi-cuenta" in final_url,
                 "my-account" in final_url,
@@ -166,7 +152,6 @@ class SufarmedScraper:
                 "salir" in response_text
             ]
             
-            # Indicadores de error
             error_indicators = [
                 "error" in response_text and ("login" in response_text or "email" in response_text),
                 "incorrect" in response_text,
@@ -181,7 +166,6 @@ class SufarmedScraper:
             elif any(error_indicators):
                 return False, "Credenciales incorrectas o error en login"
             elif login_response.status_code == 200:
-                # Si llegamos aquí, intentar determinar si estamos logueados
                 if "login" in response_text and "password" in response_text:
                     return False, "Aún en página de login - posible error de credenciales"
                 else:
@@ -211,7 +195,6 @@ class SufarmedScraper:
         for pattern in price_patterns:
             matches = re.findall(pattern, html_content, re.IGNORECASE)
             for match in matches:
-                # Limpiar el precio
                 price = str(match).replace('$', '').replace(',', '').strip()
                 if price and price.replace('.', '').isdigit():
                     prices.append(price)
@@ -219,9 +202,8 @@ class SufarmedScraper:
         return prices
     
     def buscar_producto(self, producto):
-        """Busca un producto y obtiene su precio"""
+        """Busca un producto y obtiene todos los precios"""
         try:
-            # URL de búsqueda - probar diferentes formatos
             search_urls = [
                 f"https://sufarmed.com/sufarmed/buscar?s={producto}",
                 f"https://sufarmed.com/sufarmed/buscar?controller=search&s={producto}",
@@ -230,52 +212,46 @@ class SufarmedScraper:
             
             for search_url in search_urls:
                 try:
-                    # Realizar búsqueda
                     response = self.session.get(search_url, timeout=15)
                     
                     if response.status_code == 200:
-                        # Extraer precios del HTML
                         prices = self.extract_prices_from_html(response.text)
                         
                         if prices:
-                            # Retornar el primer precio encontrado
-                            return prices[0], "Precio encontrado"
+                            return prices, "Precios encontrados"
                         
-                        # Si no se encuentran precios, verificar si hay productos
                         if "producto" in response.text.lower() or "product" in response.text.lower():
-                            return None, "Productos encontrados pero sin precios visibles"
+                            return [], "Productos encontrados pero sin precios visibles"
                     
                 except requests.exceptions.Timeout:
                     continue
                 except Exception:
                     continue
             
-            return None, "No se encontraron productos o no se pudo acceder a la búsqueda"
+            return [], "No se encontraron productos o no se pudo acceder a la búsqueda"
                 
         except Exception as e:
-            return None, f"Error durante la búsqueda: {str(e)}"
+            return [], f"Error durante la búsqueda: {str(e)}"
     
     def buscar_sin_login(self, producto):
         """Busca producto sin login como fallback"""
         try:
-            # Intentar búsqueda directa sin login
             search_url = f"https://sufarmed.com/buscar?s={producto}"
             response = self.session.get(search_url, timeout=10)
             
             if response.status_code == 200:
                 prices = self.extract_prices_from_html(response.text)
                 if prices:
-                    return prices[0], "Precio encontrado (sin login)"
+                    return prices, "Precios encontrados (sin login)"
             
-            return None, "No se encontraron resultados sin login"
+            return [], "No se encontraron resultados sin login"
             
         except Exception as e:
-            return None, f"Error en búsqueda sin login: {str(e)}"
+            return [], f"Error en búsqueda sin login: {str(e)}"
 
 # Configuración de credenciales
 st.markdown("### 🔐 Configuración de Cuenta")
 
-# Credenciales desde el frontend
 with st.expander("Configurar Credenciales de Sufarmed", expanded=True):
     col1, col2 = st.columns(2)
     
@@ -302,62 +278,49 @@ with st.expander("Configurar Credenciales de Sufarmed", expanded=True):
 # Interfaz de usuario
 st.markdown("### 🔍 Buscar Producto")
 
-# Input para el producto
 producto_buscar = st.text_input(
     "Ingresa el nombre del producto:",
     placeholder="Ej: Paracetamol, Ibuprofeno, etc."
 )
 
-# Botón para buscar
 if st.button("🔍 Buscar Precio", type="primary"):
     if not email_input or not password_input:
         st.error("❌ Debes configurar tu email y contraseña primero")
     elif producto_buscar:
-        # Mostrar spinner mientras se procesa
         with st.spinner("Buscando producto..."):
             try:
-                # Crear el scraper
                 scraper = SufarmedScraper()
                 
-                # Usar las credenciales del usuario
                 EMAIL = email_input
                 PASSWORD = password_input
                 
-                precio = None
+                precios = []  # Cambiado a lista para almacenar los precios
                 search_message = ""
                 
-                # Realizar login
                 st.info("🔐 Intentando iniciar sesión en Sufarmed...")
                 login_success, login_message = scraper.login(EMAIL, PASSWORD)
                 
                 if login_success:
                     st.success(f"✅ {login_message}")
                     
-                    # Buscar producto con login
                     st.info(f"🔍 Buscando: {producto_buscar}")
-                    precio, search_message = scraper.buscar_producto(producto_buscar)
+                    precios, search_message = scraper.buscar_producto(producto_buscar)
                     
                 else:
                     st.warning(f"⚠️ Login falló: {login_message}")
                     st.info("🔄 Intentando búsqueda sin login...")
-                    precio, search_message = scraper.buscar_sin_login(producto_buscar)
+                    precios, search_message = scraper.buscar_sin_login(producto_buscar)
                 
-                # Mostrar resultados
-                if precio:
-                    # Mostrar el resultado
+                if precios:
                     st.markdown("---")
-                    st.markdown("### 💰 Resultado de la Búsqueda")
+                    st.markdown("### 💰 Resultados de la Búsqueda")
                     
-                    col1, col2 = st.columns(2)
-                    with col1:
+                    st.metric(label="Producto", value=producto_buscar)
+                    
+                    for i, p in enumerate(precios):
                         st.metric(
-                            label="Producto",
-                            value=producto_buscar
-                        )
-                    with col2:
-                        st.metric(
-                            label="Precio",
-                            value=f"${precio}"
+                            label=f"Precio {i+1}",
+                            value=f"${p}"
                         )
                     
                     st.success("🎉 ¡Búsqueda completada exitosamente!")
@@ -380,7 +343,7 @@ st.info("""
 - Esta aplicación busca precios de productos en Sufarmed.com
 - Utiliza requests y regex para extraer información (100% compatible con Streamlit Cloud)
 - Intenta hacer login automáticamente, pero también funciona sin login
-- Los resultados mostrados corresponden al primer precio encontrado
+- Los resultados mostrados corresponden a todos los precios encontrados para la búsqueda
 """)
 
 # Debug/Test section
@@ -402,14 +365,12 @@ with st.expander("🔧 Panel de Pruebas y Debug"):
                 with st.spinner("Analizando proceso de login..."):
                     scraper = SufarmedScraper()
                     try:
-                        # Obtener página de login para análisis
                         response = scraper.session.get("https://sufarmed.com/sufarmed/iniciar-sesion", timeout=10)
                         
                         st.write("**Análisis de la página de login:**")
                         st.write(f"- Status Code: {response.status_code}")
                         st.write(f"- URL Final: {response.url}")
                         
-                        # Buscar campos de formulario
                         email_fields = re.findall(r'name=["\']([^"\']*email[^"\']*)["\']', response.text, re.IGNORECASE)
                         password_fields = re.findall(r'name=["\']([^"\']*password[^"\']*)["\']', response.text, re.IGNORECASE)
                         
@@ -418,7 +379,6 @@ with st.expander("🔧 Panel de Pruebas y Debug"):
                         if password_fields:
                             st.write(f"- Campos de password encontrados: {password_fields}")
                         
-                        # Buscar tokens
                         tokens = re.findall(r'name=["\']([^"\']*token[^"\']*)["\'][^>]*value=["\']([^"\']+)["\']', response.text, re.IGNORECASE)
                         if tokens:
                             st.write(f"- Tokens encontrados: {len(tokens)} tokens")
