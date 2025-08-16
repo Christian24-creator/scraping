@@ -40,8 +40,8 @@ def login_sufarmed(driver, email, password):
         time.sleep(3)
         
         # Encontrar y llenar los campos de login
-        email_field = driver.find_element(By.NAME, "email")
-        password_field = driver.find_element(By.NAME, "password")
+        email_field = driver.find_element(By.NAME, "laubec83@gmail.com")
+        password_field = driver.find_element(By.NAME, "Sr3ChK8pBoSEScZ")
         
         email_field.send_keys(email)
         password_field.send_keys(password)
@@ -159,4 +159,5 @@ st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>Desarrollado con Streamlit 🚀</div>", 
     unsafe_allow_html=True
+
 )
