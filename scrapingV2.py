@@ -1,12 +1,19 @@
 import streamlit as st
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
 import time
+
+# Intentar importar selenium y manejar errores
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.options import Options
+    SELENIUM_AVAILABLE = True
+except ImportError as e:
+    SELENIUM_AVAILABLE = False
+    SELENIUM_ERROR = str(e)
 
 # Configurar la página de Streamlit
 st.set_page_config(
@@ -17,20 +24,57 @@ st.set_page_config(
 
 # Título principal
 st.title("🏥 Sufarmed - Buscador de Precios")
+
+# Verificar si Selenium está disponible
+if not SELENIUM_AVAILABLE:
+    st.error(f"""
+    ❌ **Error: Selenium no está disponible**
+    
+    **Error específico:** {SELENIUM_ERROR}
+    
+    **Solución:**
+    1. Instala las dependencias necesarias:
+    ```bash
+    pip install selenium webdriver-manager
+    ```
+    
+    2. O ejecuta:
+    ```bash
+    pip install -r requirements.txt
+    ```
+    
+    3. Si estás en Streamlit Cloud, asegúrate de que `requirements.txt` esté en tu repositorio.
+    """)
+    st.stop()
+
 st.markdown("---")
 
 def setup_driver():
     """Configurar el WebDriver de Chrome para Streamlit"""
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")  # Ejecutar en modo headless
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    return driver
+    try:
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")  # Ejecutar en modo headless
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--remote-debugging-port=9222")
+        chrome_options.add_argument("--disable-web-security")
+        chrome_options.add_argument("--allow-running-insecure-content")
+        
+        # Para Streamlit Cloud, usar el ChromeDriver del sistema
+        try:
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+        except Exception:
+            # Fallback: intentar usar chromium-chromedriver del sistema
+            chrome_options.binary_location = "/usr/bin/chromium-browser"
+            driver = webdriver.Chrome(options=chrome_options)
+        
+        return driver
+    except Exception as e:
+        st.error(f"Error al configurar Chrome Driver: {str(e)}")
+        return None
 
 def login_sufarmed(driver, email, password):
     """Realizar login en Sufarmed"""
@@ -40,8 +84,8 @@ def login_sufarmed(driver, email, password):
         time.sleep(3)
         
         # Encontrar y llenar los campos de login
-        email_field = driver.find_element(By.NAME, "laubec83@gmail.com")
-        password_field = driver.find_element(By.NAME, "Sr3ChK8pBoSEScZ")
+        email_field = driver.find_element(By.NAME, "email")
+        password_field = driver.find_element(By.NAME, "password")
         
         email_field.send_keys(email)
         password_field.send_keys(password)
@@ -159,5 +203,4 @@ st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>Desarrollado con Streamlit 🚀</div>", 
     unsafe_allow_html=True
-
 )
