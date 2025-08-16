@@ -77,8 +77,8 @@ class SufarmedScraper:
             
             # Agregar credenciales
             form_data.update({
-                'laubec83@gmail.com': email,
-                'Sr3ChK8pBoSEScZ': password,
+                'email': email,
+                'password': password,
                 'submitLogin': '1'
             })
             
@@ -181,6 +181,33 @@ class SufarmedScraper:
         except Exception as e:
             return None, f"Error en búsqueda sin login: {str(e)}"
 
+# Configuración de credenciales
+st.markdown("### 🔐 Configuración de Cuenta")
+
+# Credenciales desde el frontend
+with st.expander("Configurar Credenciales de Sufarmed", expanded=True):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        email_input = st.text_input(
+            "📧 Email de Sufarmed:",
+            placeholder="tu-email@ejemplo.com",
+            help="Ingresa tu email registrado en Sufarmed"
+        )
+    
+    with col2:
+        password_input = st.text_input(
+            "🔒 Contraseña de Sufarmed:",
+            type="password",
+            placeholder="Tu contraseña",
+            help="Ingresa tu contraseña de Sufarmed"
+        )
+    
+    if not email_input or not password_input:
+        st.warning("⚠️ Debes ingresar tu email y contraseña para continuar")
+    else:
+        st.success("✅ Credenciales configuradas correctamente")
+
 # Interfaz de usuario
 st.markdown("### 🔍 Buscar Producto")
 
@@ -192,16 +219,18 @@ producto_buscar = st.text_input(
 
 # Botón para buscar
 if st.button("🔍 Buscar Precio", type="primary"):
-    if producto_buscar:
+    if not email_input or not password_input:
+        st.error("❌ Debes configurar tu email y contraseña primero")
+    elif producto_buscar:
         # Mostrar spinner mientras se procesa
         with st.spinner("Buscando producto..."):
             try:
                 # Crear el scraper
                 scraper = SufarmedScraper()
                 
-                # Credenciales
-                EMAIL = "laubec83@gmail.com"
-                PASSWORD = "Sr3ChK8pBoSEScZ"
+                # Usar las credenciales del usuario
+                EMAIL = email_input
+                PASSWORD = password_input
                 
                 precio = None
                 search_message = ""
@@ -254,6 +283,9 @@ if st.button("🔍 Buscar Precio", type="primary"):
 st.markdown("---")
 st.markdown("### ℹ️ Información")
 st.info("""
+- **Paso 1**: Configura tus credenciales de Sufarmed arriba
+- **Paso 2**: Ingresa el nombre del producto que deseas buscar
+- **Paso 3**: Haz clic en "Buscar Precio"
 - Esta aplicación busca precios de productos en Sufarmed.com
 - Utiliza requests y regex para extraer información (100% compatible con Streamlit Cloud)
 - Intenta hacer login automáticamente, pero también funciona sin login
@@ -276,4 +308,3 @@ st.markdown(
     "<div style='text-align: center; color: gray;'>Desarrollado con Streamlit 🚀 | Sin dependencias externas</div>", 
     unsafe_allow_html=True
 )
-
