@@ -77,8 +77,8 @@ class SufarmedScraper:
             
             # Agregar credenciales
             form_data.update({
-                'email': email,
-                'password': password,
+                'laubec83@gmail.com': email,
+                'Sr3ChK8pBoSEScZ': password,
                 'submitLogin': '1'
             })
             
@@ -276,3 +276,4 @@ st.markdown(
     "<div style='text-align: center; color: gray;'>Desarrollado con Streamlit 🚀 | Sin dependencias externas</div>", 
     unsafe_allow_html=True
 )
+
