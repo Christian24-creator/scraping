@@ -179,24 +179,29 @@ class SufarmedScraper:
             return False, "Error de conexión durante el login"
         except Exception as e:
             return False, f"Error inesperado durante el login: {str(e)}"
-    
+
     def extract_products_from_html(self, html_content):
-        """Extrae nombres y precios de productos del HTML usando regex"""
-        # Expresiones regulares para encontrar bloques de productos
-        product_patterns = [
-            r'<div[^>]*class=["\']product-miniature[^"\']*["\'][^>]*>(.*?)</div>',
-            r'<article[^>]*class=["\']product-miniature[^"\']*["\'][^>]*>(.*?)</article>'
-        ]
+        """
+        Extrae nombres y precios de productos del HTML.
         
+        NOTA: DEBES ACTUALIZAR LAS EXPRESIONES REGULARES ABAJO
+        CON LAS CLASES HTML ACTUALES DE SUFARMED.
+        """
+        # Patrones de contenedores de productos (a ser actualizados)
+        product_container_patterns = [
+            r'<div[^>]*class=["\']product-miniature[^"\']*["\'][^>]*>(.*?)</div>', # Ejemplo del código anterior
+            r'<li[^>]*class=["\']product-item[^"\']*["\'][^>]*>(.*?)</li>',  # Patrón de ejemplo más genérico
+        ]
+
         products = []
-        for pattern in product_patterns:
-            product_blocks = re.findall(pattern, html_content, re.IGNORECASE | re.DOTALL)
+        for container_pattern in product_container_patterns:
+            product_blocks = re.findall(container_pattern, html_content, re.IGNORECASE | re.DOTALL)
             for block in product_blocks:
-                # Extraer nombre del producto
+                # Patrón para el nombre del producto (a ser actualizado)
                 name_match = re.search(r'<h[0-9]><a[^>]*>(.*?)</a></h[0-9]>', block, re.IGNORECASE | re.DOTALL)
                 name = name_match.group(1).strip() if name_match else "Nombre no encontrado"
                 
-                # Extraer precio del producto
+                # Patrón para el precio del producto (a ser actualizado)
                 price_match = re.search(r'<[^>]*class=["\'][^"\']*product-price[^"\']*["\'][^>]*content=["\']([^"\']+)["\']', block, re.IGNORECASE | re.DOTALL)
                 price = price_match.group(1).strip() if price_match else "Precio no encontrado"
                 
