@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup
+import re
+import json
 import time
 
 # Configurar la página de Streamlit
@@ -26,27 +27,53 @@ class SufarmedScraper:
             'Connection': 'keep-alive'
         })
     
+    def extract_csrf_token(self, html_content):
+        """Extrae token CSRF del HTML usando regex"""
+        # Buscar tokens comunes
+        patterns = [
+            r'name="token"\s+value="([^"]+)"',
+            r'name="_token"\s+value="([^"]+)"',
+            r'name="csrf_token"\s+value="([^"]+)"',
+            r'"token":"([^"]+)"',
+            r'csrf_token["\s]*:["\s]*([^"]+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, html_content, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
+    
+    def extract_form_data(self, html_content):
+        """Extrae datos de formulario usando regex"""
+        form_data = {}
+        
+        # Buscar inputs hidden
+        hidden_pattern = r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\'][^>]*>'
+        matches = re.findall(hidden_pattern, html_content, re.IGNORECASE)
+        
+        for name, value in matches:
+            form_data[name] = value
+        
+        return form_data
+    
     def login(self, email, password):
         """Intenta hacer login en Sufarmed"""
         try:
             # Obtener la página de login
             login_url = "https://sufarmed.com/sufarmed/iniciar-sesion"
-            response = self.session.get(login_url)
+            response = self.session.get(login_url, timeout=10)
             
             if response.status_code != 200:
-                return False, "No se pudo acceder a la página de login"
+                return False, f"No se pudo acceder a la página de login (Status: {response.status_code})"
             
-            # Parsear la página para obtener tokens CSRF si existen
-            soup = BeautifulSoup(response.content, 'html.parser')
+            # Extraer datos del formulario
+            form_data = self.extract_form_data(response.text)
             
-            # Buscar campos ocultos (tokens CSRF, etc.)
-            hidden_inputs = soup.find_all('input', {'type': 'hidden'})
-            form_data = {}
-            for input_field in hidden_inputs:
-                name = input_field.get('name')
-                value = input_field.get('value')
-                if name:
-                    form_data[name] = value or ''
+            # Buscar token CSRF
+            csrf_token = self.extract_csrf_token(response.text)
+            if csrf_token:
+                form_data['token'] = csrf_token
             
             # Agregar credenciales
             form_data.update({
@@ -56,73 +83,103 @@ class SufarmedScraper:
             })
             
             # Enviar datos de login
-            login_response = self.session.post(login_url, data=form_data)
+            login_response = self.session.post(login_url, data=form_data, timeout=10)
             
             # Verificar si el login fue exitoso
-            if "mi-cuenta" in login_response.url or "my-account" in login_response.url:
-                return True, "Login exitoso"
-            elif "error" in login_response.text.lower() or "incorrect" in login_response.text.lower():
-                return False, "Credenciales incorrectas"
+            if login_response.status_code == 200:
+                if "mi-cuenta" in login_response.url or "my-account" in login_response.url:
+                    return True, "Login exitoso"
+                elif "dashboard" in login_response.url or "account" in login_response.url:
+                    return True, "Login exitoso"
+                elif "error" in login_response.text.lower() or "incorrect" in login_response.text.lower():
+                    return False, "Credenciales incorrectas"
+                else:
+                    return True, "Login posiblemente exitoso"
             else:
-                return True, "Login posiblemente exitoso"
+                return False, f"Error en login (Status: {login_response.status_code})"
                 
+        except requests.exceptions.Timeout:
+            return False, "Timeout: El servidor tardó demasiado en responder"
+        except requests.exceptions.ConnectionError:
+            return False, "Error de conexión: No se pudo conectar al servidor"
         except Exception as e:
             return False, f"Error durante el login: {str(e)}"
+    
+    def extract_prices_from_html(self, html_content):
+        """Extrae precios del HTML usando regex"""
+        price_patterns = [
+            r'<[^>]*class=["\'][^"\']*product-price[^"\']*["\'][^>]*content=["\']([^"\']+)["\']',
+            r'content=["\']([0-9]+\.?[0-9]*)["\'][^>]*class=["\'][^"\']*product-price',
+            r'<[^>]*class=["\'][^"\']*price[^"\']*["\'][^>]*>\s*\$?([0-9]+\.?[0-9]*)',
+            r'\$([0-9]+\.?[0-9]*)',
+            r'precio["\s]*:["\s]*([0-9]+\.?[0-9]*)',
+            r'"price"["\s]*:["\s]*([0-9]+\.?[0-9]*)'
+        ]
+        
+        prices = []
+        for pattern in price_patterns:
+            matches = re.findall(pattern, html_content, re.IGNORECASE)
+            for match in matches:
+                # Limpiar el precio
+                price = str(match).replace('$', '').replace(',', '').strip()
+                if price and price.replace('.', '').isdigit():
+                    prices.append(price)
+        
+        return prices
     
     def buscar_producto(self, producto):
         """Busca un producto y obtiene su precio"""
         try:
-            # URL de búsqueda
-            search_url = "https://sufarmed.com/sufarmed/buscar"
-            
-            # Parámetros de búsqueda
-            search_params = {
-                's': producto,
-                'controller': 'search'
-            }
-            
-            # Realizar búsqueda
-            response = self.session.get(search_url, params=search_params)
-            
-            if response.status_code != 200:
-                return None, "No se pudo realizar la búsqueda"
-            
-            # Parsear resultados
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Buscar precios con diferentes selectores posibles
-            price_selectors = [
-                '.product-price[content]',
-                '.price',
-                '.product-price',
-                '[data-price]',
-                '.price-current',
-                '.current-price'
+            # URL de búsqueda - probar diferentes formatos
+            search_urls = [
+                f"https://sufarmed.com/sufarmed/buscar?s={producto}",
+                f"https://sufarmed.com/sufarmed/buscar?controller=search&s={producto}",
+                f"https://sufarmed.com/buscar?s={producto}"
             ]
             
-            precio = None
-            for selector in price_selectors:
-                price_elements = soup.select(selector)
-                if price_elements:
-                    price_element = price_elements[0]
-                    # Intentar obtener precio del atributo content
-                    precio = price_element.get('content')
-                    if not precio:
-                        # Si no existe content, obtener el texto
-                        precio = price_element.get_text().strip()
-                    if precio:
-                        # Limpiar el precio
-                        precio = precio.replace('$', '').replace(',', '').strip()
-                        if precio.replace('.', '').isdigit():
-                            break
+            for search_url in search_urls:
+                try:
+                    # Realizar búsqueda
+                    response = self.session.get(search_url, timeout=15)
+                    
+                    if response.status_code == 200:
+                        # Extraer precios del HTML
+                        prices = self.extract_prices_from_html(response.text)
+                        
+                        if prices:
+                            # Retornar el primer precio encontrado
+                            return prices[0], "Precio encontrado"
+                        
+                        # Si no se encuentran precios, verificar si hay productos
+                        if "producto" in response.text.lower() or "product" in response.text.lower():
+                            return None, "Productos encontrados pero sin precios visibles"
+                    
+                except requests.exceptions.Timeout:
+                    continue
+                except Exception:
+                    continue
             
-            if precio:
-                return precio, "Precio encontrado"
-            else:
-                return None, "No se encontraron precios"
+            return None, "No se encontraron productos o no se pudo acceder a la búsqueda"
                 
         except Exception as e:
             return None, f"Error durante la búsqueda: {str(e)}"
+    
+    def buscar_sin_login(self, producto):
+        """Busca producto sin login como fallback"""
+        try:
+            # Intentar búsqueda directa sin login
+            search_url = f"https://sufarmed.com/buscar?s={producto}"
+            response = self.session.get(search_url, timeout=10)
+            
+            if response.status_code == 200:
+                prices = self.extract_prices_from_html(response.text)
+                if prices:
+                    return prices[0], "Precio encontrado (sin login)"
+            
+            return None, "No se encontraron resultados sin login"
+            
+        except Exception as e:
+            return None, f"Error en búsqueda sin login: {str(e)}"
 
 # Interfaz de usuario
 st.markdown("### 🔍 Buscar Producto")
@@ -146,39 +203,47 @@ if st.button("🔍 Buscar Precio", type="primary"):
                 EMAIL = "laubec83@gmail.com"
                 PASSWORD = "Sr3ChK8pBoSEScZ"
                 
+                precio = None
+                search_message = ""
+                
                 # Realizar login
-                st.info("🔐 Iniciando sesión en Sufarmed...")
+                st.info("🔐 Intentando iniciar sesión en Sufarmed...")
                 login_success, login_message = scraper.login(EMAIL, PASSWORD)
                 
                 if login_success:
                     st.success(f"✅ {login_message}")
                     
-                    # Buscar producto
+                    # Buscar producto con login
                     st.info(f"🔍 Buscando: {producto_buscar}")
                     precio, search_message = scraper.buscar_producto(producto_buscar)
                     
-                    if precio:
-                        # Mostrar el resultado
-                        st.markdown("---")
-                        st.markdown("### 💰 Resultado de la Búsqueda")
-                        
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric(
-                                label="Producto",
-                                value=producto_buscar
-                            )
-                        with col2:
-                            st.metric(
-                                label="Precio",
-                                value=f"${precio}"
-                            )
-                        
-                        st.success("🎉 ¡Búsqueda completada exitosamente!")
-                    else:
-                        st.warning(f"⚠️ {search_message}")
                 else:
-                    st.error(f"❌ {login_message}")
+                    st.warning(f"⚠️ Login falló: {login_message}")
+                    st.info("🔄 Intentando búsqueda sin login...")
+                    precio, search_message = scraper.buscar_sin_login(producto_buscar)
+                
+                # Mostrar resultados
+                if precio:
+                    # Mostrar el resultado
+                    st.markdown("---")
+                    st.markdown("### 💰 Resultado de la Búsqueda")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric(
+                            label="Producto",
+                            value=producto_buscar
+                        )
+                    with col2:
+                        st.metric(
+                            label="Precio",
+                            value=f"${precio}"
+                        )
+                    
+                    st.success("🎉 ¡Búsqueda completada exitosamente!")
+                else:
+                    st.warning(f"⚠️ {search_message}")
+                    st.info("💡 Intenta con un nombre de producto más específico o verifica que esté disponible en Sufarmed")
                     
             except Exception as e:
                 st.error(f"❌ Error general: {str(e)}")
@@ -190,14 +255,24 @@ st.markdown("---")
 st.markdown("### ℹ️ Información")
 st.info("""
 - Esta aplicación busca precios de productos en Sufarmed.com
-- Utiliza web scraping con requests y BeautifulSoup (compatible con Streamlit Cloud)
-- Los resultados mostrados corresponden al primer producto encontrado
-- El proceso puede tomar unos segundos
+- Utiliza requests y regex para extraer información (100% compatible con Streamlit Cloud)
+- Intenta hacer login automáticamente, pero también funciona sin login
+- Los resultados mostrados corresponden al primer precio encontrado
 """)
+
+# Debug/Test section
+with st.expander("🔧 Panel de Pruebas"):
+    if st.button("Probar Conexión"):
+        with st.spinner("Probando conexión..."):
+            try:
+                response = requests.get("https://sufarmed.com", timeout=5)
+                st.success(f"✅ Conexión exitosa - Status: {response.status_code}")
+            except Exception as e:
+                st.error(f"❌ Error de conexión: {str(e)}")
 
 # Footer
 st.markdown("---")
 st.markdown(
-    "<div style='text-align: center; color: gray;'>Desarrollado con Streamlit 🚀</div>", 
+    "<div style='text-align: center; color: gray;'>Desarrollado con Streamlit 🚀 | Sin dependencias externas</div>", 
     unsafe_allow_html=True
 )
