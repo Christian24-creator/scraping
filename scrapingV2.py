@@ -180,29 +180,33 @@ class SufarmedScraper:
         except Exception as e:
             return False, f"Error inesperado durante el login: {str(e)}"
     
-    def extract_prices_from_html(self, html_content):
-        """Extrae precios del HTML usando regex"""
-        price_patterns = [
-            r'<[^>]*class=["\'][^"\']*product-price[^"\']*["\'][^>]*content=["\']([^"\']+)["\']',
-            r'content=["\']([0-9]+\.?[0-9]*)["\'][^>]*class=["\'][^"\']*product-price',
-            r'<[^>]*class=["\'][^"\']*price[^"\']*["\'][^>]*>\s*\$?([0-9]+\.?[0-9]*)',
-            r'\$([0-9]+\.?[0-9]*)',
-            r'precio["\s]*:["\s]*([0-9]+\.?[0-9]*)',
-            r'"price"["\s]*:["\s]*([0-9]+\.?[0-9]*)'
+    def extract_products_from_html(self, html_content):
+        """Extrae nombres y precios de productos del HTML usando regex"""
+        # Expresiones regulares para encontrar bloques de productos
+        product_patterns = [
+            r'<div[^>]*class=["\']product-miniature[^"\']*["\'][^>]*>(.*?)</div>',
+            r'<article[^>]*class=["\']product-miniature[^"\']*["\'][^>]*>(.*?)</article>'
         ]
         
-        prices = []
-        for pattern in price_patterns:
-            matches = re.findall(pattern, html_content, re.IGNORECASE)
-            for match in matches:
-                price = str(match).replace('$', '').replace(',', '').strip()
-                if price and price.replace('.', '').isdigit():
-                    prices.append(price)
-        
-        return prices
-    
+        products = []
+        for pattern in product_patterns:
+            product_blocks = re.findall(pattern, html_content, re.IGNORECASE | re.DOTALL)
+            for block in product_blocks:
+                # Extraer nombre del producto
+                name_match = re.search(r'<h[0-9]><a[^>]*>(.*?)</a></h[0-9]>', block, re.IGNORECASE | re.DOTALL)
+                name = name_match.group(1).strip() if name_match else "Nombre no encontrado"
+                
+                # Extraer precio del producto
+                price_match = re.search(r'<[^>]*class=["\'][^"\']*product-price[^"\']*["\'][^>]*content=["\']([^"\']+)["\']', block, re.IGNORECASE | re.DOTALL)
+                price = price_match.group(1).strip() if price_match else "Precio no encontrado"
+                
+                if name != "Nombre no encontrado" and price != "Precio no encontrado":
+                    products.append({'name': name, 'price': price})
+                    
+        return products
+
     def buscar_producto(self, producto):
-        """Busca un producto y obtiene todos los precios"""
+        """Busca un producto y obtiene una lista de resultados (nombre y precio)"""
         try:
             search_urls = [
                 f"https://sufarmed.com/sufarmed/buscar?s={producto}",
@@ -215,10 +219,10 @@ class SufarmedScraper:
                     response = self.session.get(search_url, timeout=15)
                     
                     if response.status_code == 200:
-                        prices = self.extract_prices_from_html(response.text)
+                        products = self.extract_products_from_html(response.text)
                         
-                        if prices:
-                            return prices, "Precios encontrados"
+                        if products:
+                            return products, "Resultados encontrados"
                         
                         if "producto" in response.text.lower() or "product" in response.text.lower():
                             return [], "Productos encontrados pero sin precios visibles"
@@ -240,9 +244,9 @@ class SufarmedScraper:
             response = self.session.get(search_url, timeout=10)
             
             if response.status_code == 200:
-                prices = self.extract_prices_from_html(response.text)
-                if prices:
-                    return prices, "Precios encontrados (sin login)"
+                products = self.extract_products_from_html(response.text)
+                if products:
+                    return products, "Resultados encontrados (sin login)"
             
             return [], "No se encontraron resultados sin login"
             
@@ -294,7 +298,7 @@ if st.button("🔍 Buscar Precio", type="primary"):
                 EMAIL = email_input
                 PASSWORD = password_input
                 
-                precios = []  # Cambiado a lista para almacenar los precios
+                resultados = []  # Cambiado a lista para almacenar los diccionarios
                 search_message = ""
                 
                 st.info("🔐 Intentando iniciar sesión en Sufarmed...")
@@ -304,24 +308,21 @@ if st.button("🔍 Buscar Precio", type="primary"):
                     st.success(f"✅ {login_message}")
                     
                     st.info(f"🔍 Buscando: {producto_buscar}")
-                    precios, search_message = scraper.buscar_producto(producto_buscar)
+                    resultados, search_message = scraper.buscar_producto(producto_buscar)
                     
                 else:
                     st.warning(f"⚠️ Login falló: {login_message}")
                     st.info("🔄 Intentando búsqueda sin login...")
-                    precios, search_message = scraper.buscar_sin_login(producto_buscar)
+                    resultados, search_message = scraper.buscar_sin_login(producto_buscar)
                 
-                if precios:
+                if resultados:
                     st.markdown("---")
                     st.markdown("### 💰 Resultados de la Búsqueda")
                     
-                    st.metric(label="Producto", value=producto_buscar)
-                    
-                    for i, p in enumerate(precios):
-                        st.metric(
-                            label=f"Precio {i+1}",
-                            value=f"${p}"
-                        )
+                    for product in resultados:
+                        st.markdown(f"**{product['name']}**")
+                        st.metric(label="Precio", value=f"${product['price']}")
+                        st.markdown("---")
                     
                     st.success("🎉 ¡Búsqueda completada exitosamente!")
                 else:
